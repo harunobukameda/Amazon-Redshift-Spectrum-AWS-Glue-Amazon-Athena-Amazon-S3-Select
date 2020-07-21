@@ -1,0 +1,301 @@
+Parameters:
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t1.micro
+      - t2.micro
+    ConstraintDescription: must be a valid EC2 instance type.
+  KeyPair:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: "AWS::EC2::KeyPair::KeyName"
+    MinLength: '1'
+    MaxLength: '255'
+    AllowedPattern: '[\x20-\x7E]*'
+    ConstraintDescription: can contain only ASCII characters.
+  S3BucketName:
+    Description: S3 Bucket Name
+    Type: String
+Mappings: 
+  RegionMap: 
+    us-east-1:
+      EC2IMG: ami-002a7eaa5b5b40ec9
+    us-west-2:
+      EC2IMG: ami-056d8838c69d1843f
+    ap-northeast-1:
+      EC2IMG: ami-08e0224e71f409f5f
+    ap-southeast-1:
+      EC2IMG: ami-0a0ba6c16aff9f0cc
+Resources:
+# Create VPC
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/24
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      InstanceTenancy: default
+      Tags:
+      - Key: Name
+        Value: handson-minilake
+# Create Public RouteTable
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+      - Key: Name
+        Value: handson-minilake
+# Create Private RouteTable
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+      - Key: Name
+        Value: handson-minilake-private-rt
+# Create Public Subnet
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.0.0/27
+      AvailabilityZone: 
+        Fn::Select: 
+          - 0
+          - Fn::GetAZs: ""
+      Tags:
+      - Key: Name
+        Value: handson-minilake-public-sub
+# Create Private Subnet A
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.0.32/27
+      AvailabilityZone: 
+        Fn::Select: 
+          - 0
+          - Fn::GetAZs: ""
+      Tags:
+      - Key: Name
+        Value: handson-minilake-private-sub
+# Associate with Public subnet and route table for private subnet
+  PubSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+# Associate with Private subnet and route table for private subnet
+  PriSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+# Create InternetGateway
+  MyInternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+      - Key: Name
+        Value: handson-minilake
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref MyInternetGateway
+  MyPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: MyInternetGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref MyInternetGateway
+  MyEIP:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+  ElasticIPAssociate:
+    DependsOn: MyEC2Instance
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt MyEIP.AllocationId
+      InstanceId: !Ref MyEC2Instance
+  MinilakeRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "ec2.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonKinesisFirehoseFullAccess
+      RoleName: "handson-minilake"
+  MinilakeInstanceProfile: 
+    Type: "AWS::IAM::InstanceProfile"
+    Properties: 
+      Path: "/"
+      Roles: 
+        - Ref: "MinilakeRole"
+  MyEC2Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", EC2IMG]
+      InstanceType: t2.micro
+      SubnetId: !Ref PublicSubnet
+      KeyName :
+        Ref: KeyPair
+      SecurityGroupIds:
+        - Ref: MyEC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: handson-minilake
+      IamInstanceProfile: 
+        Ref: MinilakeInstanceProfile
+  MyEC2SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: handson-minilake-sg
+      GroupDescription: Enable SSH access via port 22
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp:
+            '0.0.0.0/0'
+      Tags:
+      - Key: Name
+        Value: handson-minilake-sg
+# Create EIP
+  MyEIP2:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+# Create NATGateway
+  MyNATGateway:
+    Type: "AWS::EC2::NatGateway"
+    DependsOn: 
+      - MyEIP2
+      - PrivateSubnet
+    Properties:
+      AllocationId: !GetAtt MyEIP2.AllocationId
+      SubnetId: !Ref PrivateSubnet
+      Tags:
+      - Key: Name
+        Value: handson-minilake-nat
+# set NAT as default gateway on route table for private subnet
+  MyPrivateRoute:
+    Type: AWS::EC2::Route
+    DependsOn: MyNATGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref MyNATGateway
+  MyRedShiftSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: handson-minilake-private-sg
+      GroupDescription: Enable SSH access via port 5439
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '5439'
+          ToPort: '5439'
+          SourceSecurityGroupId: !Ref MyEC2SecurityGroup
+      Tags:
+      - Key: Name
+        Value: handson-minilake-private-sg
+  LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/aws/kinesisfirehose/minilake1"
+      RetentionInDays: 7
+  Myminilakestream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: minilake1
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${S3BucketName}'
+        RoleARN: !GetAtt deliveryRole.Arn
+        BufferingHints:
+          IntervalInSeconds: '60'
+          SizeInMBs: '5'
+        Prefix: "minilake-in1/"
+        ProcessingConfiguration:
+          Enabled: 'false'
+        CloudWatchLoggingOptions:
+          Enabled: 'true'
+          LogGroupName: !Ref 'LogGroupFirehose'
+          LogStreamName: 'S3Delivery'
+  Myminilakestreamlogstream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref 'LogGroupFirehose'
+      LogStreamName: 'S3Delivery'
+
+  deliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref 'AWS::AccountId'
+      Path: "/"
+      Policies:
+        - PolicyName: firehose_delivery_policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:AbortMultipartUpload'
+                  - 's3:GetBucketLocation'
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                  - 's3:ListBucketMultipartUploads'
+                  - 's3:PutObject'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketName}' 
+                  - !Sub 'arn:aws:s3:::${S3BucketName}/*' 
+              - Effect: Allow
+                Action: 'logs:PutLogEvents'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'glue:GetTable'
+                  - 'glue:GetTableVersion'
+                  - 'glue:GetTableVersions'
+                Resource: '*'
+Outputs:
+  AllowIPAddress:
+    Description: EC2 PublicIP
+    Value: !Join
+      - ','
+      - - !Ref MyEIP
+  VPCID:
+    Description: VPC ID
+    Value: !Join
+      - ','
+      - - !Ref MyVPC
+  PrivateSunetID:
+    Description: Private Subnet ID
+    Value: !Join
+      - ','
+      - - !Ref PrivateSubnet
