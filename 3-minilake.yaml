@@ -24,7 +24,7 @@ Mappings:
     us-west-2:
       EC2IMG: ami-04536a82719bdfe98
     ap-northeast-1:
-      EC2IMG: ami-099a87a7abfb52d0b
+      EC2IMG: ami-064986a6eb9f46e23
     ap-southeast-1:
       EC2IMG: ami-0e2ba8b6ba1bd1c02
 Resources:
